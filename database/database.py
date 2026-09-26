@@ -9,4 +9,5 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def create_database():
+    import tables_sql
     Base.metadata.create_all(bind=engine)
