@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from tables_sql.asset import Asset
+from tables_sql.debt import Debt
 
 
 ZERO = Decimal("0.00")
@@ -18,10 +19,14 @@ def calculate_asset_share(asset: Asset) -> Decimal:
     else:
         percentage = asset.ownership_percentage
 
-    return asset.value * (percentage / ONE_HUNDRED)
+    return asset.value * (
+        percentage / ONE_HUNDRED
+    )
 
 
-def calculate_total_asset_value(assets: list[Asset]) -> Decimal:
+def calculate_total_asset_value(
+    assets: list[Asset]
+) -> Decimal:
     total = ZERO
 
     for asset in assets:
@@ -31,13 +36,42 @@ def calculate_total_asset_value(assets: list[Asset]) -> Decimal:
     return total
 
 
-def calculate_total_deceased_value(assets: list[Asset]) -> Decimal:
+def calculate_total_deceased_value(
+    assets: list[Asset]
+) -> Decimal:
     total = ZERO
 
     for asset in assets:
         total += calculate_asset_share(asset)
 
     return total
+
+
+def calculate_total_debt_value(
+    debts: list[Debt]
+) -> Decimal:
+    total = ZERO
+
+    for debt in debts:
+        if debt.value is not None:
+            total += debt.value
+
+    return total
+
+
+def calculate_net_estate_value(
+    total_deceased_value: Decimal,
+    total_debt_value: Decimal
+) -> Decimal:
+    net_value = (
+        total_deceased_value
+        - total_debt_value
+    )
+
+    if net_value < ZERO:
+        return ZERO
+
+    return net_value
 
 
 def calculate_equal_share(
