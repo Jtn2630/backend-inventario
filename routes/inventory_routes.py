@@ -1,3 +1,11 @@
+# ==============================================================
+# ARQUIVO: routes/inventory_routes.py
+# Rotas e controladores da API do Inventário
+# ==============================================================
+
+# ==============================================================
+# IMPORTAÇÕES NECESSÁRIAS
+# ==============================================================
 from flask_openapi3 import Tag
 from sqlalchemy import select
 
@@ -26,737 +34,389 @@ from api_data.api_models import (
     SpouseUpdate,
     SpouseView,
 )
-
 from database.database import SessionLocal
-
 from services.itd_rj import estimate_itd_2026
-
-from services.partition import (
-    calculate_equal_share,
-    calculate_net_estate_value,
-    calculate_total_asset_value,
-    calculate_total_debt_value,
-    calculate_total_deceased_value,
-)
-
+from services.partition import calculate_inventory_summary
 from tables_sql.asset import Asset
 from tables_sql.debt import Debt
 from tables_sql.deceased import Deceased
 from tables_sql.heir import Heir
 from tables_sql.spouse import Spouse
 
-
+# ==============================================================
+# TAGS DE DOCUMENTAÇÃO (OPENAPI / SWAGGER)
+# ==============================================================
 inventory_tag = Tag(
     name="Inventory",
-    description="Cadastro e consulta dos dados do inventário"
+    description="Cadastro, atualização, exclusão e consulta dos dados do inventário."
 )
 
 tax_tag = Tag(
     name="ITD",
-    description="Estimativa acadêmica de ITD/RJ"
+    description="Estimativa acadêmica de ITD/RJ."
 )
 
-
+# ==============================================================
+# REGISTRO DAS ROTAS DA API
+# ==============================================================
 def register_routes(app):
 
-    # =========================================================
-    # DECEASED - Falecido
-    # =========================================================
+    # ----------------------------------------------------------
+    # ROTAS DO FALECIDO
+    # ----------------------------------------------------------
+    @app.get(
+        "/deceased",
+        tags=[inventory_tag],
+        summary="Listar inventários",
+        description="Lista os falecidos cadastrados para permitir a seleção de inventários existentes."
+    )
+    def list_deceased():
+        with SessionLocal() as session:
+            deceased_list = list(
+                session.scalars(
+                    select(Deceased).order_by(Deceased.id)
+                ).all()
+            )
+            return [
+                DeceasedView.model_validate(deceased).model_dump(mode="json")
+                for deceased in deceased_list
+            ]
 
     @app.post(
         "/deceased",
         tags=[inventory_tag],
         summary="Cadastrar falecido",
-        responses={
-            201: DeceasedView,
-            500: ErrorMessage
-        }
+        description="Cadastra os dados da pessoa autora da herança.",
+        responses={201: DeceasedView, 500: ErrorMessage}
     )
     def create_deceased(body: DeceasedCreate):
         with SessionLocal() as session:
-            deceased = Deceased(
-                **body.model_dump()
-            )
-
+            deceased = Deceased(**body.model_dump())
             session.add(deceased)
             session.commit()
             session.refresh(deceased)
-
-            return (
-                DeceasedView
-                .model_validate(deceased)
-                .model_dump(mode="json"),
-                201
-            )
+            return DeceasedView.model_validate(deceased).model_dump(mode="json"), 201
 
     @app.put(
-        "/deceased/<id>",
+        "/deceased/<int:id>",
         tags=[inventory_tag],
         summary="Atualizar falecido",
-        responses={
-            200: DeceasedView,
-            404: ErrorMessage
-        }
+        description="Atualiza os dados de um falecido já cadastrado.",
+        responses={200: DeceasedView, 404: ErrorMessage}
     )
-    def update_deceased(
-        path: RecordIdPath,
-        body: DeceasedUpdate
-    ):
+    def update_deceased(path: RecordIdPath, body: DeceasedUpdate):
         with SessionLocal() as session:
-            deceased = session.get(
-                Deceased,
-                path.id
-            )
-
+            deceased = session.get(Deceased, path.id)
             if deceased is None:
-                return {
-                    "message": "Deceased not found."
-                }, 404
+                return {"message": "Deceased not found."}, 404
 
-            for field, value in body.model_dump().items():
-                setattr(
-                    deceased,
-                    field,
-                    value
-                )
+            dados = body.model_dump(exclude_unset=True)
+            for campo, valor in dados.items():
+                setattr(deceased, campo, valor)
 
             session.commit()
             session.refresh(deceased)
+            return DeceasedView.model_validate(deceased).model_dump(mode="json")
 
-            return (
-                DeceasedView
-                .model_validate(deceased)
-                .model_dump(mode="json"),
-                200
-            )
-
-    # =========================================================
-    # SPOUSE - Cônjuge
-    # =========================================================
-
+    # ----------------------------------------------------------
+    # ROTAS DO CÔNJUGE
+    # ----------------------------------------------------------
     @app.post(
         "/spouse",
         tags=[inventory_tag],
         summary="Cadastrar cônjuge",
-        responses={
-            201: SpouseView,
-            404: ErrorMessage
-        }
+        description="Cadastra o cônjuge ou companheiro vinculado ao falecido.",
+        responses={201: SpouseView, 404: ErrorMessage}
     )
     def create_spouse(body: SpouseCreate):
         with SessionLocal() as session:
-            deceased = session.get(
-                Deceased,
-                body.deceased_id
-            )
-
+            deceased = session.get(Deceased, body.deceased_id)
             if deceased is None:
-                return {
-                    "message": "Deceased not found."
-                }, 404
+                return {"message": "Deceased not found."}, 404
 
-            spouse = Spouse(
-                **body.model_dump()
-            )
-
+            spouse = Spouse(**body.model_dump())
             session.add(spouse)
             session.commit()
             session.refresh(spouse)
-
-            return (
-                SpouseView
-                .model_validate(spouse)
-                .model_dump(mode="json"),
-                201
-            )
+            return SpouseView.model_validate(spouse).model_dump(mode="json"), 201
 
     @app.put(
-        "/spouse/<id>",
+        "/spouse/<int:id>",
         tags=[inventory_tag],
         summary="Atualizar cônjuge",
-        responses={
-            200: SpouseView,
-            404: ErrorMessage
-        }
+        description="Atualiza os dados do cônjuge cadastrado.",
+        responses={200: SpouseView, 404: ErrorMessage}
     )
-    def update_spouse(
-        path: RecordIdPath,
-        body: SpouseUpdate
-    ):
+    def update_spouse(path: RecordIdPath, body: SpouseUpdate):
         with SessionLocal() as session:
-            spouse = session.get(
-                Spouse,
-                path.id
-            )
-
+            spouse = session.get(Spouse, path.id)
             if spouse is None:
-                return {
-                    "message": "Spouse not found."
-                }, 404
+                return {"message": "Spouse not found."}, 404
 
-            for field, value in body.model_dump().items():
-                setattr(
-                    spouse,
-                    field,
-                    value
-                )
+            dados = body.model_dump(exclude_unset=True)
+            for campo, valor in dados.items():
+                setattr(spouse, campo, valor)
 
             session.commit()
             session.refresh(spouse)
-
-            return (
-                SpouseView
-                .model_validate(spouse)
-                .model_dump(mode="json"),
-                200
-            )
+            return SpouseView.model_validate(spouse).model_dump(mode="json")
 
     @app.delete(
-        "/spouse/<id>",
+        "/spouse/<int:id>",
         tags=[inventory_tag],
         summary="Excluir cônjuge",
-        responses={
-            200: MessageResponse,
-            404: ErrorMessage
-        }
+        description="Exclui o cônjuge selecionado.",
+        responses={200: MessageResponse, 404: ErrorMessage}
     )
     def delete_spouse(path: RecordIdPath):
         with SessionLocal() as session:
-            spouse = session.get(
-                Spouse,
-                path.id
-            )
-
+            spouse = session.get(Spouse, path.id)
             if spouse is None:
-                return {
-                    "message": "Spouse not found."
-                }, 404
+                return {"message": "Spouse not found."}, 404
 
             session.delete(spouse)
             session.commit()
+            return {"message": "Spouse deleted."}
 
-            return {
-                "message": "Spouse deleted."
-            }, 200
-
-    # =========================================================
-    # HEIRS - Herdeiros
-    # =========================================================
-
+    # ----------------------------------------------------------
+    # ROTAS DOS HERDEIROS
+    # ----------------------------------------------------------
     @app.post(
         "/heirs",
         tags=[inventory_tag],
         summary="Cadastrar herdeiro",
-        responses={
-            201: HeirView,
-            404: ErrorMessage
-        }
+        description="Cadastra um herdeiro vinculado ao falecido.",
+        responses={201: HeirView, 404: ErrorMessage}
     )
     def create_heir(body: HeirCreate):
         with SessionLocal() as session:
-            deceased = session.get(
-                Deceased,
-                body.deceased_id
-            )
-
+            deceased = session.get(Deceased, body.deceased_id)
             if deceased is None:
-                return {
-                    "message": "Deceased not found."
-                }, 404
+                return {"message": "Deceased not found."}, 404
 
-            heir = Heir(
-                **body.model_dump()
-            )
-
+            heir = Heir(**body.model_dump())
             session.add(heir)
             session.commit()
             session.refresh(heir)
-
-            return (
-                HeirView
-                .model_validate(heir)
-                .model_dump(mode="json"),
-                201
-            )
+            return HeirView.model_validate(heir).model_dump(mode="json"), 201
 
     @app.put(
-        "/heirs/<id>",
+        "/heirs/<int:id>",
         tags=[inventory_tag],
         summary="Atualizar herdeiro",
-        responses={
-            200: HeirView,
-            404: ErrorMessage
-        }
+        description="Atualiza um herdeiro já cadastrado.",
+        responses={200: HeirView, 404: ErrorMessage}
     )
-    def update_heir(
-        path: RecordIdPath,
-        body: HeirUpdate
-    ):
+    def update_heir(path: RecordIdPath, body: HeirUpdate):
         with SessionLocal() as session:
-            heir = session.get(
-                Heir,
-                path.id
-            )
-
+            heir = session.get(Heir, path.id)
             if heir is None:
-                return {
-                    "message": "Heir not found."
-                }, 404
+                return {"message": "Heir not found."}, 404
 
-            for field, value in body.model_dump().items():
-                setattr(
-                    heir,
-                    field,
-                    value
-                )
+            dados = body.model_dump(exclude_unset=True)
+            for campo, valor in dados.items():
+                setattr(heir, campo, valor)
 
             session.commit()
             session.refresh(heir)
-
-            return (
-                HeirView
-                .model_validate(heir)
-                .model_dump(mode="json"),
-                200
-            )
+            return HeirView.model_validate(heir).model_dump(mode="json")
 
     @app.delete(
-        "/heirs/<id>",
+        "/heirs/<int:id>",
         tags=[inventory_tag],
         summary="Excluir herdeiro",
-        responses={
-            200: MessageResponse,
-            404: ErrorMessage
-        }
+        description="Exclui um herdeiro cadastrado.",
+        responses={200: MessageResponse, 404: ErrorMessage}
     )
     def delete_heir(path: RecordIdPath):
         with SessionLocal() as session:
-            heir = session.get(
-                Heir,
-                path.id
-            )
-
+            heir = session.get(Heir, path.id)
             if heir is None:
-                return {
-                    "message": "Heir not found."
-                }, 404
+                return {"message": "Heir not found."}, 404
 
             session.delete(heir)
             session.commit()
+            return {"message": "Heir deleted."}
 
-            return {
-                "message": "Heir deleted."
-            }, 200
-
-    # =========================================================
-    # ASSETS - Bens  
-    # =========================================================
-
+    # ----------------------------------------------------------
+    # ROTAS DOS BENS
+    # ----------------------------------------------------------
     @app.post(
         "/assets",
         tags=[inventory_tag],
         summary="Cadastrar bem",
-        responses={
-            201: AssetView,
-            404: ErrorMessage
-        }
+        description="Cadastra um bem integrante do patrimônio informado.",
+        responses={201: AssetView, 404: ErrorMessage}
     )
     def create_asset(body: AssetCreate):
         with SessionLocal() as session:
-            deceased = session.get(
-                Deceased,
-                body.deceased_id
-            )
-
+            deceased = session.get(Deceased, body.deceased_id)
             if deceased is None:
-                return {
-                    "message": "Deceased not found."
-                }, 404
+                return {"message": "Deceased not found."}, 404
 
-            asset = Asset(
-                **body.model_dump()
-            )
-
+            asset = Asset(**body.model_dump())
             session.add(asset)
             session.commit()
             session.refresh(asset)
-
-            return (
-                AssetView
-                .model_validate(asset)
-                .model_dump(mode="json"),
-                201
-            )
+            return AssetView.model_validate(asset).model_dump(mode="json"), 201
 
     @app.put(
-        "/assets/<id>",
+        "/assets/<int:id>",
         tags=[inventory_tag],
         summary="Atualizar bem",
-        responses={
-            200: AssetView,
-            404: ErrorMessage
-        }
+        description="Atualiza um bem já cadastrado.",
+        responses={200: AssetView, 404: ErrorMessage}
     )
-    def update_asset(
-        path: RecordIdPath,
-        body: AssetUpdate
-    ):
+    def update_asset(path: RecordIdPath, body: AssetUpdate):
         with SessionLocal() as session:
-            asset = session.get(
-                Asset,
-                path.id
-            )
-
+            asset = session.get(Asset, path.id)
             if asset is None:
-                return {
-                    "message": "Asset not found."
-                }, 404
+                return {"message": "Asset not found."}, 404
 
-            for field, value in body.model_dump().items():
-                setattr(
-                    asset,
-                    field,
-                    value
-                )
+            dados = body.model_dump(exclude_unset=True)
+            for campo, valor in dados.items():
+                setattr(asset, campo, valor)
 
             session.commit()
             session.refresh(asset)
-
-            return (
-                AssetView
-                .model_validate(asset)
-                .model_dump(mode="json"),
-                200
-            )
+            return AssetView.model_validate(asset).model_dump(mode="json")
 
     @app.delete(
-        "/assets/<id>",
+        "/assets/<int:id>",
         tags=[inventory_tag],
         summary="Excluir bem",
-        responses={
-            200: MessageResponse,
-            404: ErrorMessage
-        }
+        description="Exclui um bem do inventário.",
+        responses={200: MessageResponse, 404: ErrorMessage}
     )
     def delete_asset(path: RecordIdPath):
         with SessionLocal() as session:
-            asset = session.get(
-                Asset,
-                path.id
-            )
-
+            asset = session.get(Asset, path.id)
             if asset is None:
-                return {
-                    "message": "Asset not found."
-                }, 404
+                return {"message": "Asset not found."}, 404
 
             session.delete(asset)
             session.commit()
+            return {"message": "Asset deleted."}
 
-            return {
-                "message": "Asset deleted."
-            }, 200
-
-    # =========================================================
-    # DEBTS - Dívidas
-    # =========================================================
-
+    # ----------------------------------------------------------
+    # ROTAS DAS DÍVIDAS
+    # ----------------------------------------------------------
     @app.post(
         "/debts",
         tags=[inventory_tag],
         summary="Cadastrar dívida",
-        responses={
-            201: DebtView,
-            404: ErrorMessage
-        }
+        description="Cadastra uma dívida vinculada ao inventário.",
+        responses={201: DebtView, 404: ErrorMessage}
     )
     def create_debt(body: DebtCreate):
         with SessionLocal() as session:
-            deceased = session.get(
-                Deceased,
-                body.deceased_id
-            )
-
+            deceased = session.get(Deceased, body.deceased_id)
             if deceased is None:
-                return {
-                    "message": "Deceased not found."
-                }, 404
+                return {"message": "Deceased not found."}, 404
 
-            debt = Debt(
-                **body.model_dump()
-            )
-
+            debt = Debt(**body.model_dump())
             session.add(debt)
             session.commit()
             session.refresh(debt)
-
-            return (
-                DebtView
-                .model_validate(debt)
-                .model_dump(mode="json"),
-                201
-            )
+            return DebtView.model_validate(debt).model_dump(mode="json"), 201
 
     @app.put(
-        "/debts/<id>",
+        "/debts/<int:id>",
         tags=[inventory_tag],
         summary="Atualizar dívida",
-        responses={
-            200: DebtView,
-            404: ErrorMessage
-        }
+        description="Atualiza uma dívida já cadastrada.",
+        responses={200: DebtView, 404: ErrorMessage}
     )
-    def update_debt(
-        path: RecordIdPath,
-        body: DebtUpdate
-    ):
+    def update_debt(path: RecordIdPath, body: DebtUpdate):
         with SessionLocal() as session:
-            debt = session.get(
-                Debt,
-                path.id
-            )
-
+            debt = session.get(Debt, path.id)
             if debt is None:
-                return {
-                    "message": "Debt not found."
-                }, 404
+                return {"message": "Debt not found."}, 404
 
-            for field, value in body.model_dump().items():
-                setattr(
-                    debt,
-                    field,
-                    value
-                )
+            dados = body.model_dump(exclude_unset=True)
+            for campo, valor in dados.items():
+                setattr(debt, campo, valor)
 
             session.commit()
             session.refresh(debt)
-
-            return (
-                DebtView
-                .model_validate(debt)
-                .model_dump(mode="json"),
-                200
-            )
+            return DebtView.model_validate(debt).model_dump(mode="json")
 
     @app.delete(
-        "/debts/<id>",
+        "/debts/<int:id>",
         tags=[inventory_tag],
         summary="Excluir dívida",
-        responses={
-            200: MessageResponse,
-            404: ErrorMessage
-        }
+        description="Exclui uma dívida do inventário.",
+        responses={200: MessageResponse, 404: ErrorMessage}
     )
     def delete_debt(path: RecordIdPath):
         with SessionLocal() as session:
-            debt = session.get(
-                Debt,
-                path.id
-            )
-
+            debt = session.get(Debt, path.id)
             if debt is None:
-                return {
-                    "message": "Debt not found."
-                }, 404
+                return {"message": "Debt not found."}, 404
 
             session.delete(debt)
             session.commit()
+            return {"message": "Debt deleted."}
 
-            return {
-                "message": "Debt deleted."
-            }, 200
-
-    # =========================================================
-    # INVENTORY - Partilha
-    # =========================================================
-
+    # ----------------------------------------------------------
+    # CONSULTA CONSOLIDADA DO INVENTÁRIO E PARTILHA
+    # ----------------------------------------------------------
     @app.get(
         "/inventory",
         tags=[inventory_tag],
         summary="Consultar inventário",
-        responses={
-            200: InventoryView,
-            404: ErrorMessage
-        }
+        description="Consulta o inventário completo e calcula patrimônio, meação, herança e quinhões estimados.",
+        responses={200: InventoryView, 404: ErrorMessage}
     )
-    def get_inventory(
-        query: DeceasedIdQuery
-    ):
+    def get_inventory(query: DeceasedIdQuery):
         with SessionLocal() as session:
-            deceased = session.get(
-                Deceased,
-                query.deceased_id
-            )
-
+            deceased = session.get(Deceased, query.deceased_id)
             if deceased is None:
-                return {
-                    "message": "Deceased not found."
-                }, 404
-
-            spouse_statement = (
-                select(Spouse)
-                .where(
-                    Spouse.deceased_id
-                    == query.deceased_id
-                )
-            )
+                return {"message": "Deceased not found."}, 404
 
             spouse = session.scalar(
-                spouse_statement
+                select(Spouse).where(Spouse.deceased_id == query.deceased_id)
             )
-
-            heirs_statement = (
-                select(Heir)
-                .where(
-                    Heir.deceased_id
-                    == query.deceased_id
-                )
-            )
-
             heirs = list(
-                session
-                .scalars(heirs_statement)
-                .all()
+                session.scalars(select(Heir).where(Heir.deceased_id == query.deceased_id)).all()
             )
-
-            assets_statement = (
-                select(Asset)
-                .where(
-                    Asset.deceased_id
-                    == query.deceased_id
-                )
-            )
-
             assets = list(
-                session
-                .scalars(assets_statement)
-                .all()
+                session.scalars(select(Asset).where(Asset.deceased_id == query.deceased_id)).all()
             )
-
-            debts_statement = (
-                select(Debt)
-                .where(
-                    Debt.deceased_id
-                    == query.deceased_id
-                )
-            )
-
             debts = list(
-                session
-                .scalars(debts_statement)
-                .all()
+                session.scalars(select(Debt).where(Debt.deceased_id == query.deceased_id)).all()
             )
 
-            total_asset_value = (
-                calculate_total_asset_value(
-                    assets
-                )
-            )
-
-            total_deceased_value = (
-                calculate_total_deceased_value(
-                    assets
-                )
-            )
-
-            total_debt_value = (
-                calculate_total_debt_value(
-                    debts
-                )
-            )
-
-            net_estate_value = (
-                calculate_net_estate_value(
-                    total_deceased_value,
-                    total_debt_value
-                )
-            )
-
-            equal_share_estimate = (
-                calculate_equal_share(
-                    net_estate_value,
-                    len(heirs)
-                )
+            summary_data = calculate_inventory_summary(
+                deceased,
+                spouse,
+                heirs,
+                assets,
+                debts
             )
 
             response = InventoryView(
-                deceased=(
-                    DeceasedView
-                    .model_validate(deceased)
-                ),
-
-                spouse=(
-                    SpouseView
-                    .model_validate(spouse)
-                    if spouse is not None
-                    else None
-                ),
-
-                heirs=[
-                    HeirView
-                    .model_validate(heir)
-                    for heir in heirs
-                ],
-
-                assets=[
-                    AssetView
-                    .model_validate(asset)
-                    for asset in assets
-                ],
-
-                debts=[
-                    DebtView
-                    .model_validate(debt)
-                    for debt in debts
-                ],
-
-                summary=PartitionSummary(
-                    total_asset_value=(
-                        total_asset_value
-                    ),
-                    total_deceased_value=(
-                        total_deceased_value
-                    ),
-                    total_debt_value=(
-                        total_debt_value
-                    ),
-                    net_estate_value=(
-                        net_estate_value
-                    ),
-                    heirs_count=len(heirs),
-                    equal_share_estimate=(
-                        equal_share_estimate
-                    )
-                )
+                deceased=DeceasedView.model_validate(deceased),
+                spouse=(SpouseView.model_validate(spouse) if spouse is not None else None),
+                heirs=[HeirView.model_validate(heir) for heir in heirs],
+                assets=[AssetView.model_validate(asset) for asset in assets],
+                debts=[DebtView.model_validate(debt) for debt in debts],
+                summary=PartitionSummary(**summary_data)
             )
 
-            return response.model_dump(
-                mode="json"
-            )
+            return response.model_dump(mode="json")
 
-    # =========================================================
-    # ITD - Estimativa De Imposto De Transmissão Causa Mortis (RJ 2026)
-    # =========================================================
-
+    # ----------------------------------------------------------
+    # ESTIMATIVA DE ITD
+    # ----------------------------------------------------------
     @app.post(
         "/itd-estimate",
         tags=[tax_tag],
-        summary="Estimar ITD/RJ 2026",
-        responses={
-            200: ITDEstimateView
-        }
+        summary="Estimar ITD/RJ",
+        description="Recebe uma base informada e retorna uma estimativa acadêmica do imposto.",
+        responses={200: ITDEstimateView}
     )
-    def estimate_itd(
-        body: ITDEstimateRequest
-    ):
-        result = estimate_itd_2026(
-            body.base_value
-        )
-
-        response = ITDEstimateView(
-            **result
-        )
-
-        return response.model_dump(
-            mode="json"
-        )
+    def estimate_itd(body: ITDEstimateRequest):
+        result = estimate_itd_2026(body.base_value)
+        response = ITDEstimateView(**result)
+        return response.model_dump(mode="json")
